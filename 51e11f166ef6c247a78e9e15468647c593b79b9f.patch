@@ -1,0 +1,80 @@
+diff --git a/plugin/forward/setup.go b/plugin/forward/setup.go
+index e8211abf8..3736b6f03 100644
+--- a/plugin/forward/setup.go
++++ b/plugin/forward/setup.go
+@@ -251,6 +251,11 @@ func parseBlock(c *caddy.Controller, f *Forward) error {
+ 			return c.ArgErr()
+ 		}
+ 		f.tlsServerName = c.Val()
++	case "bind_ip":
++		if !c.NextArg() {
++			return c.ArgErr()
++		}
++		f.opts.Bind = c.Val()
+ 	case "expire":
+ 		if !c.NextArg() {
+ 			return c.ArgErr()
+diff --git a/plugin/pkg/proxy/connect.go b/plugin/pkg/proxy/connect.go
+index 27385a467..8c063f713 100644
+--- a/plugin/pkg/proxy/connect.go
++++ b/plugin/pkg/proxy/connect.go
+@@ -8,6 +8,7 @@ import (
+ 	"context"
+ 	"errors"
+ 	"io"
++	"net"
+ 	"strconv"
+ 	"strings"
+ 	"sync/atomic"
+@@ -46,7 +47,7 @@ func (t *Transport) updateDialTimeout(newDialTime time.Duration) {
+ }
+ 
+ // Dial dials the address configured in transport, potentially reusing a connection or creating a new one.
+-func (t *Transport) Dial(proto string) (*persistConn, bool, error) {
++func (t *Transport) Dial(proto string, bind string) (*persistConn, bool, error) {
+ 	// If tls has been configured; use it.
+ 	if t.tlsConfig != nil {
+ 		proto = "tcp-tls"
+@@ -68,7 +69,21 @@ func (t *Transport) Dial(proto string) (*persistConn, bool, error) {
+ 		t.updateDialTimeout(time.Since(reqTime))
+ 		return &persistConn{c: conn}, false, err
+ 	}
+-	conn, err := dns.DialTimeout(proto, t.addr, timeout)
++
++	cli := &dns.Client{}
++	var localAddr net.Addr
++	var err error
++	if proto == "udp" {
++		localAddr, err = net.ResolveUDPAddr("udp", bind)
++	} else {
++		localAddr, err = net.ResolveTCPAddr("tcp", bind)
++	}
++	if err != nil {
++		panic(err)
++	}
++
++	cli.Dialer = &net.Dialer{Timeout: timeout, LocalAddr: localAddr}
++	conn, err := cli.Dial(t.addr)
+ 	t.updateDialTimeout(time.Since(reqTime))
+ 	return &persistConn{c: conn}, false, err
+ }
+@@ -87,7 +102,7 @@ func (p *Proxy) Connect(ctx context.Context, state request.Request, opts Options
+ 		proto = state.Proto()
+ 	}
+ 
+-	pc, cached, err := p.transport.Dial(proto)
++	pc, cached, err := p.transport.Dial(proto, opts.Bind)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/plugin/pkg/proxy/errors.go b/plugin/pkg/proxy/errors.go
+index 461236423..efd3d8afe 100644
+--- a/plugin/pkg/proxy/errors.go
++++ b/plugin/pkg/proxy/errors.go
+@@ -23,4 +23,6 @@ type Options struct {
+ 	HCRecursionDesired bool
+ 	// HCDomain sets domain for Proxy healthcheck requests
+ 	HCDomain string
++	// Bind Interface(by plus)
++	Bind string
+ }
